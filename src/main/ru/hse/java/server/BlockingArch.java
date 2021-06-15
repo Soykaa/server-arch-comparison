@@ -8,10 +8,12 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import main.ru.hse.java.proto.Query;
 
 public class BlockingArch implements Server {
     private final ExecutorService serverSocketService = Executors.newSingleThreadExecutor();
@@ -72,7 +74,7 @@ public class BlockingArch implements Server {
         private final DataOutputStream outputStream;
 
         private volatile boolean working = true;
-        private final ConcurrentHashMap<Integer, TimeStartFinish> timestamps;
+        private final ConcurrentHashMap<Integer, ClientTask> timestamps;
 
         private ClientData(Socket socket) throws IOException {
             this.socket = socket;
@@ -81,19 +83,24 @@ public class BlockingArch implements Server {
             outputStream = new DataOutputStream(socket.getOutputStream());
         }
 
-        private class TimeStartFinish {
+        private class ClientTask {
             private long start;
             private long finish;
+            private ArrayList<Integer> sortedData;
+            private int index;
         }
 
-        public void sendResponse(int [] data) {
+        public void sendResponse(ClientTask curTask) {
             responseWriter.submit(() -> {
                 try {
                     long finish = System.currentTimeMillis();
-//                    TODO: ответ от сервера
-                    TimeStartFinish curTSF = timestamps.get(index);
-                    curTSF.finish = finish;
-                    timestamps.replace(index, curTSF);
+                    Query query = Query.newBuilder().setId(curTask.index)
+                            .setSize(curTask.sortedData.size()).addAllNum(curTask.sortedData).build();
+                    outputStream.writeInt(query.toByteArray().length);
+                    outputStream.write(query.toByteArray().length);
+                    outputStream.flush();
+                    curTask.finish = finish;
+                    timestamps.replace(curTask.index, curTask);
                 } catch (IOException e) {
                     close();
                 }
@@ -104,14 +111,21 @@ public class BlockingArch implements Server {
             requestReader.submit(() -> {
                 try {
                     while(working) {
-                        int [] data;
-//                        TODO: чтение массива
-                        TimeStartFinish curTSF = new TimeStartFinish();
-                        curTSF.start = System.currentTimeMillis();
-                        timestamps.put(index, curTSF);
+                        int messageSize = inputStream.readInt();
+                        byte [] message = new byte[messageSize];
+                        inputStream.readFully(message);
+
+                        Query allMessage = Query.parseFrom(message);
+                        int index = allMessage.getId();
+                        List<Integer> data = allMessage.getNumList();
+                        int [] arrayToSort = data.stream().mapToInt(i->i).toArray();
+                        ClientTask curTask = new ClientTask();
+                        curTask.start = System.currentTimeMillis();
+                        curTask.index = index;
+                        timestamps.put(index, curTask);
                         workerThreadPool.submit(() -> {
-                            BubbleSort.sort(data);
-                            sendResponse(data);
+                            BubbleSort.sort(arrayToSort);
+                            sendResponse(curTask);
                         });
                     }
                 } catch (IOException e) {

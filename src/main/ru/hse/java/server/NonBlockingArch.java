@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -243,7 +244,7 @@ public class NonBlockingArch implements Server {
                 // TODO protobuf --> index, size
                 /* sorting an array */
                 workerThreadPool.submit(() -> {
-                    List<Integer> sortedList = BubbleSort(arrayToSort);
+                    List<Integer> sortedList = IntStream.of(BubbleSort(arrayToSort)).boxed().collect(Collectors.toList()));
                     long end = System.currentTimeMillis();
                     TimeStartFinish curTSF = timestamps.get(index);
                     timestamps.replace(index, curTSF);
