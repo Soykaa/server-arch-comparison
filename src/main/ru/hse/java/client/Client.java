@@ -4,7 +4,6 @@ import ru.hse.java.common.InformationKeeper;
 import main.ru.hse.java.proto.Query;
 
 import java.io.*;
-import java.net.InetAddress;
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.*;
@@ -18,23 +17,18 @@ public class Client implements Runnable {
     private final DataOutputStream output;
     private final ScheduledExecutorService sendToServer = newSingleThreadScheduledExecutor();
     private final ExecutorService readFromServer = newSingleThreadExecutor();
-    private static ConcurrentHashMap<Integer, ClientTask> tasks;
+    private static final ConcurrentHashMap<Integer, ClientTask> tasks = new ConcurrentHashMap<>();
 
     public Client(String host, int port) throws IOException {
-        InetAddress address;
-        address = InetAddress.getByName(host);
-        socket = new Socket(address, port);
+        socket = new Socket(host, port);
         input = new DataInputStream(socket.getInputStream());
         output = new DataOutputStream(socket.getOutputStream());
-        tasks = new ConcurrentHashMap<>();
     }
 
-    private static class ClientTask {
+    private class ClientTask {
         private long start;
         private long finish;
         private ArrayList<Integer> sortedData;
-
-        ClientTask() {}
 
         public void sortAndSetData(ArrayList<Integer> data) {
             Collections.sort(data);
@@ -59,12 +53,12 @@ public class Client implements Runnable {
                         long finish = System.currentTimeMillis();
                         ClientTask curTask = tasks.get(taskId);
                         curTask.finish = finish;
-                        tasks.replace(taskId, curTask);
                         acceptedTasks++;
                     }
                 }
             } catch (IOException e) {
                 e.printStackTrace();
+                // TODO
             }
         });
         try {
@@ -74,7 +68,7 @@ public class Client implements Runnable {
         }
     }
 
-    public static class ScheduledTask implements Runnable {
+    public class ScheduledTask implements Runnable {
         private final ScheduledExecutorService threadPool;
         private final DataOutputStream output;
         private final Random rand = new Random();
@@ -105,7 +99,6 @@ public class Client implements Runnable {
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            tasks.put(taskId, curTask);
             scheduleTask();
         }
 

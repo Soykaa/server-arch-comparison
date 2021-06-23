@@ -9,7 +9,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -188,11 +187,13 @@ public class NonBlockingArch implements Server {
         private int numbersCounter;
         private boolean newTask = true;
 
-        private final ConcurrentHashMap<Integer, TimeStartFinish> timestamps;
+        private final ConcurrentHashMap<Integer, ClientTask> timestamps;
 
-        private class TimeStartFinish {
+        private class ClientTask {
             private long start;
             private long finish;
+            private int size;
+            private int index;
         }
 
         public ClientData(SocketChannel socketChannel) {
@@ -206,10 +207,12 @@ public class NonBlockingArch implements Server {
         }
 
         public void read() throws IOException {
-            long start = -1;
+            ClientTask curTask;
             if (newTask) {
-                start = System.currentTimeMillis();
+                long start = System.currentTimeMillis();
                 newTask = false;
+                curTask = new ClientTask();
+                curTask.start = start;
             }
             /* non blocking read */
             socketChannel.read(readBuffer);
@@ -223,8 +226,10 @@ public class NonBlockingArch implements Server {
             if (!isReadIndex && readBuffer.remaining() >= 4) {
                 index = readBuffer.getInt();
                 if (start != -1) {
-                    TimeStartFinish curTSF = new TimeStartFinish();
-                    curTSF.start = start;
+                    ClientTask curTask = new ClientTask();
+                    curTask.start = start;
+                    curTask.index = index;
+                    curTask.size = size;
                     timestamps.put(index, curTSF);
                 }
                 isReadIndex = true;

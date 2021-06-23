@@ -17,7 +17,8 @@ import main.ru.hse.java.proto.Query;
 
 public class BlockingArch implements Server {
     private final ExecutorService serverSocketService = Executors.newSingleThreadExecutor();
-    private final ExecutorService workerThreadPool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() - 2);
+    private final ExecutorService workerThreadPool =
+            Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() - 2);
 
     private volatile boolean isWorking = true;
     private ServerSocket serverSocket;
@@ -87,20 +88,19 @@ public class BlockingArch implements Server {
             private long start;
             private long finish;
             private ArrayList<Integer> sortedData;
-            private int index;
         }
 
-        public void sendResponse(ClientTask curTask) {
+        public void sendResponse(int index) {
             responseWriter.submit(() -> {
                 try {
                     long finish = System.currentTimeMillis();
-                    Query query = Query.newBuilder().setId(curTask.index)
+                    ClientTask curTask = timestamps.get(index);
+                    Query query = Query.newBuilder().setId(index)
                             .setSize(curTask.sortedData.size()).addAllNum(curTask.sortedData).build();
                     outputStream.writeInt(query.toByteArray().length);
-                    outputStream.write(query.toByteArray().length);
+                    outputStream.write(query.toByteArray());
                     outputStream.flush();
                     curTask.finish = finish;
-                    timestamps.replace(curTask.index, curTask);
                 } catch (IOException e) {
                     close();
                 }
@@ -121,11 +121,10 @@ public class BlockingArch implements Server {
                         int [] arrayToSort = data.stream().mapToInt(i->i).toArray();
                         ClientTask curTask = new ClientTask();
                         curTask.start = System.currentTimeMillis();
-                        curTask.index = index;
                         timestamps.put(index, curTask);
                         workerThreadPool.submit(() -> {
                             BubbleSort.sort(arrayToSort);
-                            sendResponse(curTask);
+                            sendResponse(index);
                         });
                     }
                 } catch (IOException e) {
@@ -142,6 +141,7 @@ public class BlockingArch implements Server {
                 socket.close();
             } catch (IOException e) {
                 e.printStackTrace();
+                // TODO return после stop
             }
         }
     }
