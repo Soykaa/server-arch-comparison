@@ -3,11 +3,14 @@ package ru.hse.java.server;
 import ru.hse.java.common.InformationKeeper;
 
 import java.io.IOException;
-import java.net.ServerSocket;
-import java.net.Socket;
+import java.net.InetSocketAddress;
+import main.ru.hse.java.proto.Query;
+import ru.hse.java.utils.BubbleSort;
+
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.List;
@@ -16,13 +19,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public class NonBlockingArch implements Server {
     private final ExecutorService serverSocketService = Executors.newSingleThreadExecutor();
     private final ExecutorService workerThreadPool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() - 2);
     private final ConcurrentHashMap.KeySetView<ClientData, Boolean> clients = ConcurrentHashMap.newKeySet();
     private volatile boolean isWorking = true;
-    private ServerSocket serverSocket;
+    private ServerSocketChannel serverSocketChannel;
 
     private final ExecutorService requestThreadPool = Executors.newSingleThreadExecutor();
     private final RequestHandler requestHandler = new RequestHandler();
@@ -32,21 +37,23 @@ public class NonBlockingArch implements Server {
     @Override
     public void start() {
         try {
-            serverSocket = new ServerSocket(InformationKeeper.getPort());
+            serverSocketChannel = ServerSocketChannel.open();
+            serverSocketChannel.socket().bind(new InetSocketAddress(InformationKeeper.getPort()));
         } catch (IOException e) {
             e.printStackTrace();
         }
         requestThreadPool.submit(requestHandler);
         responseThreadPool.submit(responseHandler);
-        serverSocketService.submit(() -> acceptClients(serverSocket));
+        serverSocketService.submit(() -> acceptClients(serverSocketChannel));
     }
 
-    private void acceptClients(ServerSocket serverSocket) {
-        try (ServerSocket ignored = serverSocket) {
+    private void acceptClients(ServerSocketChannel serverSocketChannel) {
+        try (ServerSocketChannel ignored = serverSocketChannel) {
             while (isWorking) {
                 try {
-                    Socket socket = serverSocket.accept();
-                    ClientData clientData = new ClientData(socket.getChannel());
+                    SocketChannel socketChannel = serverSocketChannel.accept();
+                    socketChannel.configureBlocking(false);
+                    ClientData clientData = new ClientData(socketChannel);
                     clients.add(clientData);
                     requestHandler.registrationQueueRequest.add(clientData);
                     requestHandler.requestSelector.wakeup();
@@ -64,7 +71,7 @@ public class NonBlockingArch implements Server {
     public void stop() {
         isWorking = false;
         try {
-            serverSocket.close();
+            serverSocketChannel.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -115,7 +122,6 @@ public class NonBlockingArch implements Server {
                 ClientData client = registrationQueueRequest.poll();
                 SocketChannel socketChannel = client.getSocketChannel();
                 try {
-                    socketChannel.configureBlocking(false);
                     socketChannel.register(requestSelector, SelectionKey.OP_READ, client);
                 } catch (IOException e) {
                     stop();
@@ -167,7 +173,6 @@ public class NonBlockingArch implements Server {
                 ClientData client = registrationQueueResponse.poll();
                 SocketChannel socketChannel = client.getSocketChannel();
                 try {
-                    socketChannel.configureBlocking(false);
                     socketChannel.register(responseSelector, SelectionKey.OP_WRITE, client);
                 } catch (IOException e) {
                     stop();
@@ -178,22 +183,21 @@ public class NonBlockingArch implements Server {
 
     private class ClientData {
         private final SocketChannel socketChannel;
-        private final ByteBuffer readBuffer = ByteBuffer.allocate(1000000);
+        private ByteBuffer messageReadBuffer;
+        private ByteBuffer messageSizeReadBuffer;
         private final ConcurrentLinkedQueue<ByteBuffer> tasksToWrite = new ConcurrentLinkedQueue<>();
 
-        private boolean isReadSize;
-        private boolean isReadIndex;
-        private byte [] array;
-        private int numbersCounter;
+        private boolean isReadSize = false;
         private boolean newTask = true;
+
+        private ClientTask curTask;
+        private int size;
 
         private final ConcurrentHashMap<Integer, ClientTask> timestamps;
 
         private class ClientTask {
             private long start;
             private long finish;
-            private int size;
-            private int index;
         }
 
         public ClientData(SocketChannel socketChannel) {
@@ -207,81 +211,69 @@ public class NonBlockingArch implements Server {
         }
 
         public void read() throws IOException {
-            ClientTask curTask;
             if (newTask) {
                 long start = System.currentTimeMillis();
                 newTask = false;
                 curTask = new ClientTask();
                 curTask.start = start;
+                messageSizeReadBuffer = ByteBuffer.allocate(4);
             }
-            /* non blocking read */
-            socketChannel.read(readBuffer);
-            readBuffer.flip();
 
-            /* read up to the end from buffer */
-            if (!isReadSize && readBuffer.remaining() >= 8) {
-                size = readBuffer.getInt();
-                isReadSize = true;
-            }
-            if (!isReadIndex && readBuffer.remaining() >= 4) {
-                index = readBuffer.getInt();
-                if (start != -1) {
-                    ClientTask curTask = new ClientTask();
-                    curTask.start = start;
-                    curTask.index = index;
-                    curTask.size = size;
-                    timestamps.put(index, curTSF);
+            if (!isReadSize) {
+                socketChannel.read(messageSizeReadBuffer);
+                messageSizeReadBuffer.flip();
+                if (messageSizeReadBuffer.remaining() == 0) {
+                    isReadSize = true;
+                    size = messageSizeReadBuffer.getInt();
+                    messageReadBuffer = ByteBuffer.allocate(size);
                 }
-                isReadIndex = true;
-                array = new byte[size - 4];
+                messageSizeReadBuffer.flip();
+            } else {
+                socketChannel.read(messageReadBuffer);
+                messageReadBuffer.flip();
+                if (messageReadBuffer.remaining() == 0) {
+                    byte [] message = new byte[size];
+                    messageReadBuffer.get(message);
+                    Query allMessage = Query.parseFrom(message);
+                    int index = allMessage.getId();
+                    List<Integer> data = allMessage.getNumList();
+                    int [] arrayToSort = data.stream().mapToInt(i->i).toArray();
+                    curTask.start = System.currentTimeMillis();
+                    timestamps.put(index, curTask);
+                    newTask = true;
+                    isReadSize = false;
+                    workerThreadPool.submit(() -> {
+                        BubbleSort.sort(arrayToSort);
+                        curTask.finish = System.currentTimeMillis();
+                        List<Integer> sortedData = IntStream.of(arrayToSort).boxed()
+                                .collect(Collectors.toList());
+                        ByteBuffer writeBuffer = ByteBuffer.allocate(4 + size);
+                        Query query = Query.newBuilder().setId(index)
+                                .setSize(sortedData.size()).addAllNum(sortedData).build();
+                        writeBuffer.putInt(query.toByteArray().length);
+                        writeBuffer.put(query.toByteArray());
+                        writeBuffer.flip();
+                        tasksToWrite.add(writeBuffer);
+                        responseHandler.registrationQueueResponse.add(this);
+                        responseHandler.responseSelector.wakeup();
+                    });
+                }
+                messageReadBuffer.flip();
             }
-            while (readBuffer.remaining() > 0 && isReadSize) {
-                array[numbersCounter++] = readBuffer.get();
-            }
-            readBuffer.compact();
-
-            /* write data */
-            if (numbersCounter == array.length && isReadSize && isReadIndex) {
-                byte [] data = array;
-                isReadSize = false;
-                isReadIndex = false;
-                numbersCounter = 0;
-                // TODO protobuf --> index, size
-                /* sorting an array */
-                workerThreadPool.submit(() -> {
-                    List<Integer> sortedList = IntStream.of(BubbleSort(arrayToSort)).boxed().collect(Collectors.toList()));
-                    long end = System.currentTimeMillis();
-                    TimeStartFinish curTSF = timestamps.get(index);
-                    timestamps.replace(index, curTSF);
-                    // TODO protobuf
-                    ByteBuffer writeBuffer = ByteBuffer.allocate(10000000);
-                    /* write to buffer */
-                    writeBuffer.putInt(size);
-                    writeBuffer.putInt(index);
-                    writeBuffer.put(data.toByteArray());
-                    writeBuffer.flip();
-                    tasksToWrite.add(writeBuffer);
-                    responseHandler.registrationQueueResponse.add(this);
-                    responseHandler.responseSelector.wakeup();
-                });
-            }
-            readBuffer.compact();
         }
 
         public void write(SelectionKey key) throws IOException {
             ByteBuffer writeBuffer = tasksToWrite.peek();
             if (writeBuffer != null) {
                 socketChannel.write(writeBuffer);
-                if (writeBuffer.remaining() == 0) {
+                if (writeBuffer.hasRemaining()) {
                     tasksToWrite.remove();
-                    newTask = true;
                 }
             }
             if (tasksToWrite.isEmpty()) {
                 key.cancel();
             }
         }
-
         public SocketChannel getSocketChannel() {
             return socketChannel;
         }

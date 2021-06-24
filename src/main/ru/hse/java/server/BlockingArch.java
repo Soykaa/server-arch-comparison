@@ -8,11 +8,13 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import main.ru.hse.java.proto.Query;
 
 public class BlockingArch implements Server {
@@ -87,7 +89,7 @@ public class BlockingArch implements Server {
         private class ClientTask {
             private long start;
             private long finish;
-            private ArrayList<Integer> sortedData;
+            private List<Integer> sortedData;
         }
 
         public void sendResponse(int index) {
@@ -114,7 +116,6 @@ public class BlockingArch implements Server {
                         int messageSize = inputStream.readInt();
                         byte [] message = new byte[messageSize];
                         inputStream.readFully(message);
-
                         Query allMessage = Query.parseFrom(message);
                         int index = allMessage.getId();
                         List<Integer> data = allMessage.getNumList();
@@ -124,6 +125,8 @@ public class BlockingArch implements Server {
                         timestamps.put(index, curTask);
                         workerThreadPool.submit(() -> {
                             BubbleSort.sort(arrayToSort);
+                            curTask.sortedData = IntStream.of(arrayToSort).boxed()
+                                    .collect(Collectors.toList());
                             sendResponse(index);
                         });
                     }
